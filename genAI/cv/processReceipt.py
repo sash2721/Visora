@@ -7,7 +7,7 @@ from mindee import Client, product
 
 class ProcessReceipts:
     def __init__(self, apiKey):
-        pass
+        self.apiKey = apiKey
 
     def convertImageToData(self, image: str, currency: str) -> dict:
         # Creating the image from the bytes sent by the backend
