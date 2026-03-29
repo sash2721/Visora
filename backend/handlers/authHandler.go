@@ -16,7 +16,10 @@ type LoginRequest struct {
 
 // Response structure
 type AuthResponse struct {
-	Token string `json:"token"`
+	Token  string `json:"token"`
+	UserID string `json:"userID"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
 }
 
 type AuthHandler struct {
@@ -47,7 +50,7 @@ func (s *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// calling the login service to get the auth token
-	token, serviceErr, errJson, errCode := s.Service.Login(loginReq.Email, loginReq.Password)
+	token, userID, userEmail, role, serviceErr, errJson, errCode := s.Service.Login(loginReq.Email, loginReq.Password)
 
 	if serviceErr != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -58,7 +61,7 @@ func (s *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := AuthResponse{Token: token}
+	response := AuthResponse{Token: token, UserID: userID, Email: userEmail, Role: role}
 	responseJson, _ := json.Marshal(response)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -93,7 +96,7 @@ func (s *AuthHandler) HandleSignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, serviceErr, errJson, errCode := s.Service.Signup(signupReq.Email, signupReq.Password)
+	token, userID, userEmail, role, serviceErr, errJson, errCode := s.Service.Signup(signupReq.Email, signupReq.Password)
 
 	if serviceErr != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -104,7 +107,7 @@ func (s *AuthHandler) HandleSignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := AuthResponse{Token: token}
+	response := AuthResponse{Token: token, UserID: userID, Email: userEmail, Role: role}
 	responseJson, _ := json.Marshal(response)
 
 	w.Header().Set("Content-Type", "application/json")

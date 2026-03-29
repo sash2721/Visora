@@ -1,30 +1,35 @@
 from fastapi import FastAPI
-import json
-
+from models.uploadModels import UploadReceiptRequest, UploadReceiptResponse
+from configs.serverConfig import ServerConfig
 from cv.processReceipt import ProcessReceipts
 
 app = FastAPI()
+config = ServerConfig()
+
 print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 print("Starting GenAI Service")
 print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
 
 @app.get("/health")
 def read_health():
     return {"message": "GenAI Service running"}
 
-@app.post("/uploadreceipt")
-def process_uploaded_receipt(request):
-    # convert the request json in python dictionary
-    requestData: dict = json.loads(request)
 
-    # initalising the CV Service handler
+@app.post(config.GENAI_UPLOAD_API, response_model=UploadReceiptResponse)
+def process_uploaded_receipt(request: UploadReceiptRequest):
+    # initialising the CV Service handler
     cvHandler = ProcessReceipts()
-    receiptData: dict = cvHandler.convertImageToData(requestData)
+    receiptData: dict = cvHandler.convertImageToData(request.image, request.userContext.currency)
 
-@app.get("/generatesummary")
+    return receiptData
+
+@app.get(config.GENAI_GENERATE_SUMMARY_API)
 def generate_llm_summary():
+    # TODO: For later
     pass
 
-@app.get("/getanalytics")
+@app.get(config.GENAI_GET_ANALYTICS_API)
 def get_user_analytics():
+    # TODO: For later
     pass

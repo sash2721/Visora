@@ -29,24 +29,28 @@ func main() {
 		w.Write([]byte(`{"message": "Backend Service running"}`))
 	})
 
+	// getting the configs
+	serverConfig := configs.GetServerConfig()
+
 	// creating services
 	authService := services.NewAuthService()
+	uploadService := services.NewUploadService()
 
 	// creating handlers & injecting services into them
 	authHandler := &handlers.AuthHandler{Service: authService}
+	uploadHandler := &handlers.UploadHandler{Service: uploadService}
 
 	// registering the routes
-	r.Post("/auth/login", authHandler.HandleLogin)
-	r.Post("/auth/signup", authHandler.HandleSignUp)
+	r.Post(serverConfig.BackendLoginAPI, authHandler.HandleLogin)
+	r.Post(serverConfig.BackendSignupAPI, authHandler.HandleSignUp)
 
 	r.Group(func(r chi.Router) {
 		// using the authorization & authentication middlewares only for these routes
 		r.Use(middlewares.AuthZMiddleware)
 		r.Use(middlewares.AuthNMiddleware)
-	})
 
-	// getting the configs
-	serverConfig := configs.GetServerConfig()
+		r.Post(serverConfig.BackendUploadAPI, uploadHandler.HandleReceiptUploads)
+	})
 
 	// initialising the server
 	var server *http.Server
