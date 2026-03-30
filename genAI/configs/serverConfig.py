@@ -10,6 +10,7 @@ class ServerConfig:
     GENAI_UPLOAD_API = os.getenv("GENAI_UPLOAD_API", "/uploadreceipt")
     GENAI_GENERATE_SUMMARY_API = os.getenv("GENAI_GENERATE_SUMMARY_API", "/generatesummary")
     GENAI_GET_ANALYTICS_API = os.getenv("GENAI_GET_ANALYTICS_API", "/getanalytics")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     OCR_API_KEY = os.getenv("OCR_API_KEY", "")
     MODEL_ID = os.getenv("OCR_MODEL_ID")

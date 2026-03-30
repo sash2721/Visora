@@ -1,9 +1,21 @@
-fastapi
-pydantic
-python-dotenv
-uvicorn[standard]
-pandas
-openai
-requests
-pillow
-mindee
+# ── Web Framework ────────────────────────────────────────────────
+fastapi==0.135.2
+uvicorn[standard]==0.42.0
+
+# ── Data Validation ──────────────────────────────────────────────
+pydantic==2.12.5
+
+# ── Data & HTTP ──────────────────────────────────────────────────
+pandas==2.2.3
+requests==2.32.3
+Pillow==11.2.1
+
+# ── Computer Vision ──────────────────────────────────────────----
+mindee==4.34.0
+
+# ── LLM Providers ────────────────────────────────────────────────
+google-genai==1.7.0
+groq==1.1.1
+
+# ── Environment / Config ─────────────────────────────────────────
+python-dotenv==1.1.0
