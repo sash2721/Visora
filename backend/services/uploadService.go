@@ -83,6 +83,7 @@ func (*UploadService) ProcessReceiptImage(file multipart.File, currency string, 
 		Currency:          receiptCurrency,
 		Items:             receiptItems,
 		CategoriesSummary: categoriesSummary,
+		ConfidenceScore:   uploadResp.ConfidenceScore,
 	}
 
 	jsonResponse, err := json.Marshal(backendResp)
