@@ -20,15 +20,20 @@ logger = logging.getLogger("genai.cv")
 
 class ProcessReceipts:
     def __init__(self, ocrApiKey, modelId, geminiApiKey, groqApiKey, geminiModel, groqModel):
+        # api keys
         self.ocrApiKey = ocrApiKey
         self.geminiApiKey = geminiApiKey
         self.groqApiKey = groqApiKey
+        
+        # model versions
+        self.ocrModelId = modelId
         self.geminiModel = geminiModel
         self.groqModel = groqModel
+
+        # initialising clients
         self.ocrClient = ClientV2(self.ocrApiKey)
         self.geminiClient = genai.Client(api_key=self.geminiApiKey)
         self.groqClient = Groq(api_key=self.groqApiKey)
-        self.modelId = modelId
 
     def convertImageToData(self, image: str, currency: str) -> dict:
         # Decode the base64 image
@@ -40,7 +45,7 @@ class ProcessReceipts:
 
         # Set up Mindee OCR params
         params = InferenceParameters(
-            model_id=self.modelId,
+            model_id=self.ocrModelId,
             rag=None,
             raw_text=None,
             polygon=None,
