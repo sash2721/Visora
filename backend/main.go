@@ -74,7 +74,8 @@ func main() {
 		r.Use(middlewares.AuthNMiddleware)
 
 		r.Post(serverConfig.BackendUploadAPI, uploadHandler.HandleReceiptUploads)
-		r.Post(serverConfig.BackendSummaryAPI, summaryHandler.HandleAnalyticsInsights)
+		r.Post(serverConfig.BackendAnalyticsAPI, summaryHandler.HandleAnalytics)
+		r.Post(serverConfig.BackendInsightsAPI, summaryHandler.HandleInsights)
 	})
 
 	// initialising the server

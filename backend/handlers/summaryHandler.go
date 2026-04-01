@@ -9,6 +9,10 @@ type SummaryHandler struct {
 	Service *services.SummaryService
 }
 
-func (s *SummaryHandler) HandleAnalyticsInsights(w http.ResponseWriter, r *http.Request) {
+func (s *SummaryHandler) HandleAnalytics(w http.ResponseWriter, r *http.Request) {
+
+}
+
+func (s *SummaryHandler) HandleInsights(w http.ResponseWriter, r *http.Request) {
 
 }
