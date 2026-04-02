@@ -19,20 +19,7 @@ class ReceiptItem(BaseModel):
     category: str
 
 
-class UserReceipt(BaseModel):
-    merchant: str
-    date: str
-    totalAmount: float
-    items: list[ReceiptItem]
-
-
-class GetAnalyticsRequest(BaseModel):
-    userID: str
-    currency: str
-    period: str
-    receipts: list[UserReceipt]
-
-
+# Response model
 class UploadReceiptResponse(BaseModel):
     merchant: str
     date: str
@@ -40,16 +27,3 @@ class UploadReceiptResponse(BaseModel):
     currency: str
     items: list[ReceiptItem]
     confidenceScore: float
-
-class CategoryItem(BaseModel):
-    category: str
-    amount: float
-
-class DailySpending(BaseModel):
-    date: str
-    amount: float
-
-class GetAnalyticsResponse(BaseModel):
-    totalAmount: float
-    categoryBreakdown: list[CategoryItem]
-    dailySpending: list[DailySpending]
