@@ -122,12 +122,15 @@ class ProcessReceipts:
 
     def addCategoriesToList(self, itemsList: list) -> list:
         categories = ", ".join(categoriesList)
-        itemNames = [item["name"] for item in itemsList]
+        itemSummaries = [{"name": item["name"], "price": item["price"]} for item in itemsList]
 
         prompt = (
-            f"You are a categorization assistant. Given a list of item names, assign each item a category "
+            f"You are a categorization assistant. Given a list of items with their prices, assign each item a category "
             f"from ONLY this list: [{categories}].\n\n"
-            f"Items: {json.dumps(itemNames)}\n\n"
+            f"Items: {json.dumps(itemSummaries)}\n\n"
+            f"IMPORTANT: If an item has a negative price or its name suggests a discount, cashback, "
+            f"club card savings, loyalty reward, or any kind of price reduction, assign it the category "
+            f"\"Discounts & Cashback\". These often appear as negative amounts on receipts.\n\n"
             f"Respond with a JSON array of objects with 'name' and 'category' fields. "
             f"No explanation, just the JSON array."
         )
@@ -143,7 +146,7 @@ class ProcessReceipts:
             primaryName, fallbackName = "Groq", "Gemini"
         self._llm_toggle = not self._llm_toggle
 
-        logger.info("Categorizing %d items | Primary=%s Fallback=%s", len(itemNames), primaryName, fallbackName)
+        logger.info("Categorizing %d items | Primary=%s Fallback=%s", len(itemSummaries), primaryName, fallbackName)
 
         result = primary(prompt)
         if not result:

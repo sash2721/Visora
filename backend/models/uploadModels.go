@@ -34,6 +34,14 @@ type ReceiptItems struct {
 	Category string  `json:"category"`
 }
 
+// Manual Expense Entry Request struct
+type ManualExpenseRequest struct {
+	Merchant string         `json:"merchant"`
+	Date     string         `json:"date"`
+	Currency string         `json:"currency"`
+	Items    []ReceiptItems `json:"items"`
+}
+
 // Backend Response struct
 type BackendUploadResponse struct {
 	ReceiptID         string             `json:"receiptID"`

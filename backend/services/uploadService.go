@@ -198,3 +198,62 @@ func buildCategoriesSummary(itemsList []models.ReceiptItems) map[string]float64 
 	}
 	return summary
 }
+
+func (s *UploadService) ProcessManualExpense(expense models.ManualExpenseRequest, userID string, email string) ([]byte, error, int, []byte) {
+	slog.Info("Processing manual expense entry",
+		slog.String("UserID", userID),
+		slog.String("Merchant", expense.Merchant),
+	)
+
+	// calculate total from items
+	var totalAmount float64
+	for _, item := range expense.Items {
+		totalAmount += item.Price * float64(item.Quantity)
+	}
+
+	receiptID, err := s.Repo.StoreManualExpense(userID, expense, totalAmount)
+	if err != nil {
+		slog.Error("Failed to store manual expense in DB", slog.Any("Error", err))
+		errJsonData, internalServerError := errors.NewInternalServerError("Error while storing manual expense data", err)
+		return nil, internalServerError, internalServerError.Code, errJsonData
+	}
+
+	categoriesSummary := buildCategoriesSummary(expense.Items)
+
+	backendResp := models.BackendUploadResponse{
+		ReceiptID:         receiptID,
+		UserID:            userID,
+		Email:             email,
+		Merchant:          expense.Merchant,
+		Date:              expense.Date,
+		TotalAmount:       totalAmount,
+		Currency:          expense.Currency,
+		Items:             expense.Items,
+		CategoriesSummary: categoriesSummary,
+		ConfidenceScore:   1.0,
+	}
+
+	jsonResponse, err := json.Marshal(backendResp)
+	if err != nil {
+		slog.Error("Failed to marshal manual expense response")
+		errJsonData, internalServerError := errors.NewInternalServerError("Error while marshaling the manual expense response", err)
+		return nil, internalServerError, internalServerError.Code, errJsonData
+	}
+
+	// recompute analytics & insights in the background
+	go func() {
+		if err := s.SummaryService.RecomputeAnalytics(userID); err != nil {
+			slog.Error("Failed to recompute analytics", slog.String("UserID", userID), slog.Any("Error", err))
+		}
+		if err := s.SummaryService.RecomputeInsights(userID); err != nil {
+			slog.Error("Failed to recompute insights", slog.String("UserID", userID), slog.Any("Error", err))
+		}
+	}()
+
+	slog.Info("Manual expense processed successfully",
+		slog.String("UserID", userID),
+		slog.String("ReceiptID", receiptID),
+	)
+
+	return jsonResponse, nil, 0, nil
+}

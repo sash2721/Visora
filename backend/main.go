@@ -74,6 +74,7 @@ func main() {
 		r.Use(middlewares.AuthNMiddleware)
 
 		r.Post(serverConfig.BackendUploadAPI, uploadHandler.HandleReceiptUploads)
+		r.Post(serverConfig.BackendManualExpenseAPI, uploadHandler.HandleManualExpense)
 		r.Get(serverConfig.BackendAnalyticsAPI, summaryHandler.HandleGetAnalytics)
 		r.Get(serverConfig.BackendInsightsAPI, summaryHandler.HandleGetInsights)
 	})

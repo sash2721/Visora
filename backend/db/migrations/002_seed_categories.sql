@@ -2,8 +2,10 @@
 INSERT INTO categories (name) VALUES
     ('Food & Groceries'),
     ('Dining Out'),
+    ('Snacks & Beverages'),
     ('Transportation'),
     ('Fuel'),
+    ('Parking'),
     ('Shopping'),
     ('Clothing & Fashion'),
     ('Electronics'),
@@ -19,5 +21,7 @@ INSERT INTO categories (name) VALUES
     ('Education'),
     ('Financial (Bills, Taxes, Insurance, Fees)'),
     ('Gifts & Donations'),
+    ('Tips & Service Charges'),
+    ('Discounts & Cashback'),
     ('Miscellaneous')
 ON CONFLICT (name) DO NOTHING;

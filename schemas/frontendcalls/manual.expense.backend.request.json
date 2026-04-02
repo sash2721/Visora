@@ -1,0 +1,19 @@
+{
+  "merchant": "Street Food Stall",
+  "date": "2026-04-02",
+  "currency": "INR",
+  "items": [
+    {
+      "name": "Samosa",
+      "price": 20,
+      "quantity": 2,
+      "category": "Food"
+    },
+    {
+      "name": "Chai",
+      "price": 15,
+      "quantity": 1,
+      "category": "Food"
+    }
+  ]
+}
