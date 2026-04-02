@@ -1,12 +1,27 @@
-# Virtual Environments
-venv
-
 # Env Variables
 .env
 
-# Other files
-genAI/__pycache__
-genAI/configs/__pycache__
-genAI/services/__pycache__
-genAI/models/__pycache__
-genAI/utils/__pycache__
+# Python
+venv
+__pycache__
+
+# Node / Frontend
+node_modules
+dist
+dist-ssr
+*.local
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / Editor
+.DS_Store
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
