@@ -4,12 +4,23 @@
   "period": "monthly",
   "receipts": [
     {
+      "receiptID": "receipt123",
       "merchant": "Reliance Smart",
       "date": "2026-03-01",
       "totalAmount": 845.50,
       "items": [
-        { "name": "Milk", "price": 60, "quantity": 1, "category": "Food & Groceries" },
-        { "name": "Shampoo", "price": 240, "quantity": 2, "category": "Personal Care" }
+        { 
+          "name": "Milk", 
+          "price": 60, 
+          "quantity": 1, 
+          "category": "Food & Groceries" 
+        },
+        { 
+          "name": "Shampoo", 
+          "price": 240, 
+          "quantity": 2, 
+          "category": "Personal Care" 
+        }
       ]
     }
   ]

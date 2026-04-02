@@ -12,7 +12,6 @@ class UploadReceiptRequest(BaseModel):
     userContext: UserContext
 
 
-# Response models
 class ReceiptItem(BaseModel):
     name: str
     price: float
@@ -20,6 +19,7 @@ class ReceiptItem(BaseModel):
     category: str
 
 
+# Response model
 class UploadReceiptResponse(BaseModel):
     merchant: str
     date: str

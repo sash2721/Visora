@@ -16,7 +16,8 @@ import (
 )
 
 type UploadService struct {
-	Repo *repositories.UploadRepository
+	Repo           *repositories.UploadRepository
+	SummaryService *SummaryService
 }
 
 var serverConfig *configs.ServerConfig
@@ -29,8 +30,8 @@ func getGenAIURL() string {
 	return fmt.Sprintf("http://%s%s%s", serverConfig.GenAIHost, serverConfig.GenAIPort, serverConfig.GenAIUploadEndpoint)
 }
 
-func NewUploadService(repo *repositories.UploadRepository) *UploadService {
-	return &UploadService{Repo: repo}
+func NewUploadService(repo *repositories.UploadRepository, summaryService *SummaryService) *UploadService {
+	return &UploadService{Repo: repo, SummaryService: summaryService}
 }
 
 func (s *UploadService) ProcessReceiptImage(file multipart.File, currency string, userID string, email string) ([]byte, error, int, []byte) {
@@ -103,6 +104,16 @@ func (s *UploadService) ProcessReceiptImage(file multipart.File, currency string
 		slog.String("UserID", userID),
 		slog.Int("CategoryCount", len(categoriesSummary)),
 	)
+
+	// recompute analytics & insights in the background after successful upload
+	go func() {
+		if err := s.SummaryService.RecomputeAnalytics(userID); err != nil {
+			slog.Error("Failed to recompute analytics", slog.String("UserID", userID), slog.Any("Error", err))
+		}
+		if err := s.SummaryService.RecomputeInsights(userID); err != nil {
+			slog.Error("Failed to recompute insights", slog.String("UserID", userID), slog.Any("Error", err))
+		}
+	}()
 
 	return jsonResponse, nil, 0, nil
 }

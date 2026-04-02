@@ -36,6 +36,7 @@ func RunMigrations() error {
 	files := []string{
 		"migrations/001_init_schema.sql",
 		"migrations/002_seed_categories.sql",
+		"migrations/003_add_analytics_insights.sql",
 	}
 
 	for _, file := range files {

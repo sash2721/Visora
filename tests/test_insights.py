@@ -111,7 +111,7 @@ def generate_insights(request: dict, llm_provider: str = "gemini") -> dict:
     prompt = (
         f"You are a personal finance assistant. Analyze this spending data and respond with a JSON object "
         f"containing exactly two fields:\n"
-        f'- "summary": A brief 1-2 sentence summary of spending in {context["currency"]}\n'
+        f'- "summary": A brief 2 or more points summary of spending in {context["currency"]}\n'
         f'- "warnings": An array of strings, each a short warning about unusual or high spending patterns. '
         f"If nothing stands out, return an empty array.\n\n"
         f"Spending data:\n"

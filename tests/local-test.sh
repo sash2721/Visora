@@ -87,3 +87,44 @@ curl -s -X POST http://localhost:8080/uploadreceipt \
 curl -s -X POST http://localhost:8080/uploadreceipt \
   -H "Authorization: Bearer TOKEN" \
   -F "image=@/path/to/receipt.jpg" | jq
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Analytics & Insights APIs
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# These return cached data computed after each receipt upload.
+# Upload at least one receipt first before calling these.
+
+
+# ── 10. Get Analytics (returns cached analytics) ──
+
+curl -s -X GET http://localhost:8080/useranalytics \
+  -H "Authorization: Bearer TOKEN" | jq
+
+
+# ── 11. Get Insights (returns cached LLM insights) ──
+
+curl -s -X GET http://localhost:8080/userinsights \
+  -H "Authorization: Bearer TOKEN" | jq
+
+
+# ── 12. Get Analytics without Auth (expect 400) ──
+
+curl -s -X GET http://localhost:8080/useranalytics | jq
+
+
+# ── 13. Get Insights without Auth (expect 400) ──
+
+curl -s -X GET http://localhost:8080/userinsights | jq
+
+
+# ── 14. Get Analytics with Invalid Token (expect 400) ──
+
+curl -s -X GET http://localhost:8080/useranalytics \
+  -H "Authorization: Bearer invalidtoken123" | jq
+
+
+# ── 15. Get Insights with Invalid Token (expect 400) ──
+
+curl -s -X GET http://localhost:8080/userinsights \
+  -H "Authorization: Bearer invalidtoken123" | jq

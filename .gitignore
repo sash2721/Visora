@@ -7,6 +7,6 @@ venv
 # Other files
 genAI/__pycache__
 genAI/configs/__pycache__
-genAI/cv/__pycache__
+genAI/services/__pycache__
 genAI/models/__pycache__
 genAI/utils/__pycache__
