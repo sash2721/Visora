@@ -67,7 +67,7 @@ export default function Dashboard() {
     });
 
     const thisMonth = months[months.length - 1];
-    const past = months.slice(0, months.length - 1);
+    const past = months.slice(0, months.length - 1).filter(m => m.total > 0);
 
     return {
       thisMonthTotal: thisMonth.total || 0, // In case there are no receipts
@@ -137,17 +137,19 @@ export default function Dashboard() {
           <motion.div initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.1 } } }}>
             
             {/* ── Recent Months Strip ── */}
-            <motion.div className={styles.recentMonthsContainer} variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}>
-               <h2 className={styles.recentMonthsHeader}><Calendar size={20} style={{ color: 'var(--accent)' }}/> Recent Months</h2>
-               <div className={styles.monthsGrid}>
-                 {previousMonths.map((m, i) => (
-                   <motion.div key={m.id} className={`glass-panel ${styles.monthCard}`} transition={{ delay: i * 0.05 }} whileHover={{ scale: 1.05 }}>
-                     <span className={styles.monthCardLabel}>{m.label}</span>
-                     <span className={styles.monthCardValue}>{analytics?.currency} {m.total.toFixed(2)}</span>
-                   </motion.div>
-                 ))}
-               </div>
-            </motion.div>
+            {previousMonths.length > 0 && (
+              <motion.div className={styles.recentMonthsContainer} variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}>
+                 <h2 className={styles.recentMonthsHeader}><Calendar size={20} style={{ color: 'var(--accent)' }}/> Recent Months</h2>
+                 <div className={styles.monthsGrid}>
+                   {previousMonths.map((m, i) => (
+                     <motion.div key={m.id} className={`glass-panel ${styles.monthCard}`} transition={{ delay: i * 0.05 }} whileHover={{ scale: 1.05 }}>
+                       <span className={styles.monthCardLabel}>{m.label}</span>
+                       <span className={styles.monthCardValue}>{analytics?.currency} {m.total.toFixed(2)}</span>
+                     </motion.div>
+                   ))}
+                 </div>
+              </motion.div>
+            )}
 
             {/* ── AI Insights ── */}
             {insights && insights.summary && (
