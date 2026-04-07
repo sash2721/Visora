@@ -7,7 +7,7 @@
 
 ```
 Internet ──► Cloudflare Tunnel (HTTPS) ──► Zoro (ECS) ──► Sanji (ECS, internal)
-                  api.visora.me                              private IP only
+                  api.visora.me                    sanji-genai.strawhats.local
 
 Internet ──► Vercel (HTTPS)
                   visora.me
@@ -15,8 +15,9 @@ Internet ──► Vercel (HTTPS)
 
 - **Nami** (React frontend) → Vercel, served at `visora.me`
 - **Zoro** (Go backend) → ECS Fargate, exposed via Cloudflare Tunnel at `https://api.visora.me`
-- **Sanji** (FastAPI GenAI) → ECS Fargate, internal only — reachable by Zoro via private IP
+- **Sanji** (FastAPI GenAI) → ECS Fargate, internal only — reachable by Zoro via `sanji-genai.strawhats.local` (AWS Cloud Map)
 - **Cloudflare Tunnel** runs as a sidecar container in Zoro's task — provides free HTTPS without an ALB
+- **AWS Cloud Map** provides service discovery — Sanji gets a stable DNS name that auto-updates when its IP changes
 
 ---
 
@@ -217,7 +218,7 @@ So we pass them as separate env vars, NOT a single URL.
         { "name": "BACKEND_ANALYTICS_API", "value": "/useranalytics" },
         { "name": "BACKEND_INSIGHTS_API", "value": "/userinsights" },
         { "name": "BACKEND_DAYRECEIPTS_API", "value": "/todayreceipts" },
-        { "name": "GENAI_HOST", "value": "SANJI_PRIVATE_IP_PLACEHOLDER" },
+        { "name": "GENAI_HOST", "value": "sanji-genai.strawhats.local" },
         { "name": "GENAI_PORT", "value": ":4000" },
         { "name": "GENAI_UPLOAD_API", "value": "/uploadreceipt" },
         { "name": "GENAI_GET_ANALYTICS_API", "value": "/getanalytics" },
@@ -383,7 +384,43 @@ echo "Sanji SG: $SANJI_SG"
 
 ---
 
-## Step 9 — Identify the Working Subnet
+## Step 9 — Service Discovery (AWS Cloud Map)
+
+Cloud Map gives Sanji a stable DNS name (`sanji-genai.strawhats.local`) that auto-updates when its IP changes. This eliminates the need to manually update Zoro's config on every Sanji redeploy.
+
+```bash
+# Create a private DNS namespace
+aws servicediscovery create-private-dns-namespace \
+  --name strawhats.local \
+  --vpc $VPC_ID \
+  --region $AWS_REGION
+```
+
+Wait ~30 seconds for it to create, then get the namespace ID:
+
+```bash
+export NAMESPACE_ID=$(aws servicediscovery list-namespaces --region $AWS_REGION \
+  --query 'Namespaces[?Name==`strawhats.local`].Id' --output text)
+echo $NAMESPACE_ID
+```
+
+Create a service discovery service for Sanji:
+
+```bash
+aws servicediscovery create-service \
+  --name sanji-genai \
+  --dns-config "NamespaceId=$NAMESPACE_ID,DnsRecords=[{Type=A,TTL=10}]" \
+  --health-check-custom-config FailureThreshold=1 \
+  --region $AWS_REGION
+```
+
+Save the `Id` from the output — you'll need it in Step 11.
+
+> After this, Sanji will be reachable at `sanji-genai.strawhats.local` from within the VPC. This is what `GENAI_HOST` in Zoro's task definition should be set to.
+
+---
+
+## Step 10 — Identify the Working Subnet
 
 > ⚠️ **Subnet connectivity issue:** Not all default subnets may have proper internet access. Some subnets can fail to reach ECR or SSM, causing `ResourceInitializationError`. To avoid this, identify a subnet that works and pin both services to it.
 
@@ -397,12 +434,14 @@ If a service fails with connectivity errors, try the next subnet in the list. On
 
 ---
 
-## Step 10 — Create ECS Services
+## Step 11 — Create ECS Services
 
-Deploy Sanji first (so we can get its private IP for Zoro).
+Deploy Sanji first with service discovery attached, then Zoro.
 
 ```bash
-# Sanji — no public IP, internal only, pinned to working subnet
+export DISCOVERY_SERVICE_ARN=arn:aws:servicediscovery:$AWS_REGION:$AWS_ACCOUNT_ID:service/<DISCOVERY_SERVICE_ID>
+
+# Sanji — with service discovery, pinned to working subnet
 aws ecs create-service \
   --cluster strawhats \
   --service-name sanji-genai \
@@ -410,10 +449,12 @@ aws ecs create-service \
   --desired-count 1 \
   --launch-type FARGATE \
   --network-configuration "awsvpcConfiguration={subnets=[$WORKING_SUBNET],securityGroups=[$SANJI_SG],assignPublicIp=ENABLED}" \
+  --service-registries "registryArn=$DISCOVERY_SERVICE_ARN" \
   --region $AWS_REGION
 ```
 
-> `assignPublicIp=ENABLED` is needed even for Sanji so it can reach ECR and SSM. The security group ensures only Zoro can reach port 4000.
+> Replace `<DISCOVERY_SERVICE_ID>` with the `Id` from Step 9.
+> `assignPublicIp=ENABLED` is needed so Sanji can reach ECR and SSM. The security group ensures only Zoro can reach port 4000.
 
 Wait ~90 seconds, then verify Sanji is running:
 ```bash
@@ -423,26 +464,7 @@ aws ecs describe-tasks --cluster strawhats --tasks $SANJI_TASK \
   --region $AWS_REGION --query 'tasks[0].{status:lastStatus,reason:stoppedReason}'
 ```
 
-Get Sanji's private IP:
-```bash
-SANJI_ENI=$(aws ecs describe-tasks --cluster strawhats --tasks $SANJI_TASK \
-  --region $AWS_REGION \
-  --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
-  --output text)
-
-SANJI_PRIVATE_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $SANJI_ENI \
-  --query 'NetworkInterfaces[0].PrivateIpAddress' --output text --region $AWS_REGION)
-
-echo "Sanji private IP: $SANJI_PRIVATE_IP"
-```
-
-Now update `GENAI_HOST` in `task-def-zoro.json` with Sanji's private IP:
-```bash
-sed -i '' "s/SANJI_PRIVATE_IP_PLACEHOLDER/$SANJI_PRIVATE_IP/g" task-def-zoro.json
-aws ecs register-task-definition --cli-input-json file://task-def-zoro.json --region $AWS_REGION
-```
-
-Deploy Zoro:
+Deploy Zoro (no need to get Sanji's IP — Cloud Map handles it via `sanji-genai.strawhats.local`):
 ```bash
 aws ecs create-service \
   --cluster strawhats \
@@ -469,7 +491,7 @@ curl https://api.visora.me/health
 
 ---
 
-## Step 11 — Cloudflare Tunnel Setup (HTTPS without ALB)
+## Step 12 — Cloudflare Tunnel Setup (HTTPS without ALB)
 
 > An ALB costs ~$16-22/month. A Cloudflare Tunnel is free and provides HTTPS.
 
@@ -497,7 +519,7 @@ The tunnel auto-creates the `api` DNS record. For the frontend, add:
 
 ---
 
-## Step 12 — Deploy Nami on Vercel
+## Step 13 — Deploy Nami on Vercel
 
 1. Go to [vercel.com/new](https://vercel.com/new) → import your GitHub repo
 2. Configure:
@@ -537,8 +559,9 @@ aws ecs update-service --cluster strawhats --service zoro-backend \
   --force-new-deployment --region $AWS_REGION
 ```
 
-> ⚠️ **After Sanji redeploys**, its private IP changes. Get the new IP (Step 10), update `GENAI_HOST` in `task-def-zoro.json`, re-register the task definition, and redeploy Zoro.
+> **No manual IP updates needed.** Cloud Map automatically resolves `sanji-genai.strawhats.local` to Sanji's current IP.
 > **Zoro's public IP also changes**, but since we use Cloudflare Tunnel, the `api.visora.me` URL stays the same — no Vercel update needed.
+> **In short:** just rebuild, push, and force redeploy. Everything else is automatic.
 
 ---
 
@@ -564,7 +587,7 @@ aws logs tail /ecs/zoro-backend --follow --region $AWS_REGION
 | `unable to pull secrets: kms decrypt` | Missing KMS decrypt permission on execution role | Add `kms:Decrypt` inline policy to `ecsTaskExecutionRole` |
 | `ResourceInitializationError: unable to pull registry auth` | Can't reach ECR — subnet/networking issue | Same as above — use a subnet with internet gateway route |
 | Mixed content errors in browser | Frontend (HTTPS) calling backend (HTTP) | Use Cloudflare Tunnel for HTTPS on backend |
-| `GENAI_HOST` and `GENAI_PORT` swapped | Copy-paste error in task definition | Double-check: HOST = IP address, PORT = `:4000` |
+| `GENAI_HOST` and `GENAI_PORT` swapped | Copy-paste error in task definition | Double-check: HOST = `sanji-genai.strawhats.local`, PORT = `:4000` |
 
 ---
 
@@ -577,6 +600,7 @@ aws logs tail /ecs/zoro-backend --follow --region $AWS_REGION
 | ECR storage | ~$0.10 |
 | CloudWatch Logs | ~$0.50 |
 | SSM Parameter Store | Free |
+| Cloud Map | Free tier |
 | Cloudflare Tunnel | Free |
 | Vercel (Hobby) | Free |
 | Domain (visora.me) | ~$9/year |
@@ -596,7 +620,8 @@ aws logs tail /ecs/zoro-backend --follow --region $AWS_REGION
 | 6 | Store secrets in SSM (same region!) | ✅ |
 | 7 | Create task definitions | ✅ (update if config changes) |
 | 8 | Create security groups | ✅ |
-| 9 | Identify working subnet | ✅ |
-| 10 | Deploy services, wire Zoro → Sanji | 🔁 (IP changes on redeploy) |
-| 11 | Cloudflare Tunnel + DNS | ✅ |
-| 12 | Deploy Nami on Vercel | ✅ |
+| 9 | Service discovery (Cloud Map) | ✅ |
+| 10 | Identify working subnet | ✅ |
+| 11 | Deploy ECS services | ✅ (redeploy = just force new deployment) |
+| 12 | Cloudflare Tunnel + DNS | ✅ |
+| 13 | Deploy Nami on Vercel | ✅ |
