@@ -1,35 +1,39 @@
-# 🏴‍☠️ Strawhats — ECS Deployment Guide
-### Deploying Zoro (Go, port 3000) & Sanji (Python/FastAPI, port 4000) on AWS ECS Fargate
+# 🏴‍☠️ Strawhats — Deployment Guide
+### Zoro (Go, port 3000) & Sanji (Python/FastAPI, port 4000) on AWS ECS Fargate, Nami (React) on Vercel
 
 ---
 
 ## Architecture
 
 ```
-Nami (Vercel) ──► Zoro (ECS, public) ◄──► Sanji (ECS, private)
+Internet ──► Cloudflare Tunnel (HTTPS) ──► Zoro (ECS) ──► Sanji (ECS, internal)
+                  api.visora.me                              private IP only
+
+Internet ──► Vercel (HTTPS)
+                  visora.me
 ```
 
-- **Nami → Zoro**: Nami is the only external caller, so Zoro needs a public IP with port 3000 open to the internet.
-- **Zoro → Sanji**: Sanji is an internal service — only Zoro calls it. Sanji gets **no public IP** and port 4000 is open only to Zoro's security group.
-- **Sanji URL in Zoro**: Zoro reaches Sanji via Sanji's **private IP**, passed as an environment variable at deploy time (see Step 10).
+- **Nami** (React frontend) → Vercel, served at `visora.me`
+- **Zoro** (Go backend) → ECS Fargate, exposed via Cloudflare Tunnel at `https://api.visora.me`
+- **Sanji** (FastAPI GenAI) → ECS Fargate, internal only — reachable by Zoro via private IP
+- **Cloudflare Tunnel** runs as a sidecar container in Zoro's task — provides free HTTPS without an ALB
 
 ---
 
 ## Before You Start
 
-Make sure you have:
-- [ ] AWS CLI installed and configured (`aws configure` — needs Access Key ID, Secret, and region)
+- [ ] AWS CLI installed and configured (`aws configure`)
 - [ ] Docker running locally
-- [ ] Your monorepo folder structure ready (with `/backend` and `/genAI` folders)
-- [ ] Your `.env` file ready with all the secrets/API keys your services need
+- [ ] Monorepo with `/backend`, `/genAI`, and `/frontend` folders
+- [ ] `.env` file with all secrets
+- [ ] A domain on Cloudflare (we use `visora.me`)
+- [ ] Cloudflare Tunnel token (see Step 11)
 
-Set your region (Mumbai). Run this once at the start of every terminal session:
+Set your region. Run this at the start of every terminal session:
 ```bash
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-export AWS_REGION=ap-south-1
+export AWS_REGION=eu-central-1
 export ECR_BASE=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-
-# Verify — should print your account ID
 echo $AWS_ACCOUNT_ID
 ```
 
@@ -37,47 +41,37 @@ echo $AWS_ACCOUNT_ID
 
 ## Step 1 — Create ECR Repositories
 
-ECR is AWS's container registry — like Docker Hub but private. You need one repo per service.
-
 ```bash
 aws ecr create-repository --repository-name zoro-backend --region $AWS_REGION
 aws ecr create-repository --repository-name sanji-genai --region $AWS_REGION
 ```
 
-✅ You should see a JSON response for each with `"repositoryName"` in it.
-
 ---
 
 ## Step 2 — Build & Push Images to ECR
 
+> ⚠️ **Apple Silicon users (M1/M2/M3):** You MUST use `--platform linux/amd64` or Fargate will fail with `image Manifest does not contain descriptor matching platform 'linux/amd64'`.
+
 ```bash
-# Authenticate Docker to ECR (token expires in 12 hours, re-run if you get auth errors)
 aws ecr get-login-password --region $AWS_REGION | \
   docker login --username AWS --password-stdin $ECR_BASE
 
-# Build images (run from your monorepo root)
-docker build -f Dockerfile-Zoro -t zoro-backend ./backend
-docker build -f Dockerfile-Sanji -t sanji-genai ./genAI
+# Build for linux/amd64 (required for Fargate)
+docker build --platform linux/amd64 -f Dockerfile-Zoro -t zoro-backend ./backend
+docker build --platform linux/amd64 -f Dockerfile-Sanji -t sanji-genai ./genAI
 
-# Tag for ECR
 docker tag zoro-backend:latest $ECR_BASE/zoro-backend:latest
 docker tag sanji-genai:latest $ECR_BASE/sanji-genai:latest
 
-# Push
 docker push $ECR_BASE/zoro-backend:latest
 docker push $ECR_BASE/sanji-genai:latest
 ```
 
-✅ Both pushes should complete with layer digests printed. You can verify in the AWS Console under ECR.
-
 ---
 
-## Step 3 — Create the IAM Task Execution Role
-
-This is a one-time setup. It gives ECS permission to pull your images from ECR, write logs to CloudWatch, and read secrets from SSM.
+## Step 3 — Create IAM Task Execution Role
 
 ```bash
-# Create the role
 aws iam create-role \
   --role-name ecsTaskExecutionRole \
   --assume-role-policy-document '{
@@ -89,127 +83,180 @@ aws iam create-role \
     }]
   }'
 
-# Attach the standard ECS policy (ECR pull + CloudWatch logs)
 aws iam attach-role-policy \
   --role-name ecsTaskExecutionRole \
   --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
-# Attach SSM read policy (needed to read your secrets)
 aws iam attach-role-policy \
   --role-name ecsTaskExecutionRole \
   --policy-arn arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
 ```
 
-✅ No output means success for the `attach-role-policy` commands. That's normal.
+> ⚠️ **KMS Decrypt permission:** SSM SecureString parameters are encrypted with KMS. You MUST add decrypt permission or tasks will fail with `unable to pull secrets from ssm`:
+
+```bash
+aws iam put-role-policy --role-name ecsTaskExecutionRole --policy-name SSMDecryptPolicy --policy-document '{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameters", "kms:Decrypt"],
+      "Resource": "*"
+    }
+  ]
+}'
+```
 
 ---
 
-## Step 4 — Create the ECS Cluster
+## Step 4 — Create ECS Cluster
 
 ```bash
 aws ecs create-cluster --cluster-name strawhats --region $AWS_REGION
 ```
 
-✅ You should see `"clusterName": "strawhats"` in the response.
-
 ---
 
 ## Step 5 — Create CloudWatch Log Groups
-
-This is where your container logs will appear.
 
 ```bash
 aws logs create-log-group --log-group-name /ecs/zoro-backend --region $AWS_REGION
 aws logs create-log-group --log-group-name /ecs/sanji-genai --region $AWS_REGION
 ```
 
-✅ No output = success.
-
 ---
 
 ## Step 6 — Store Secrets in SSM Parameter Store
 
-**Do not skip this.** Never put API keys directly in the task definition JSON.
+> ⚠️ **Region matters!** Store secrets in the SAME region as your ECS cluster. Mismatched regions cause `invalid ssm parameters` errors.
 
-Look at your `.env` file and store each secret individually. The pattern is:
-
+### Zoro secrets:
 ```bash
-aws ssm put-parameter \
-  --name "/strawhats/<service>/<KEY_NAME>" \
-  --value "your-actual-value-here" \
-  --type SecureString \
-  --region $AWS_REGION
+aws ssm put-parameter --name "/strawhats/zoro/DATABASE_CONNECTION_STRING" \
+  --value "your-db-url" --type SecureString --region $AWS_REGION
+
+aws ssm put-parameter --name "/strawhats/zoro/ENCRYPTION_SECRET_KEY" \
+  --value "your-secret-key" --type SecureString --region $AWS_REGION
+
+aws ssm put-parameter --name "/strawhats/zoro/BUCKET_ENDPOINT_STRING" \
+  --value "your-bucket-endpoint" --type SecureString --region $AWS_REGION
 ```
 
-**Examples — replace values with your real ones:**
-
+### Sanji secrets:
 ```bash
-# Example: if Sanji needs an OpenAI key
-aws ssm put-parameter \
-  --name "/strawhats/sanji/OPENAI_API_KEY" \
-  --value "sk-your-key-here" \
-  --type SecureString \
-  --region $AWS_REGION
+aws ssm put-parameter --name "/strawhats/sanji/GEMINI_API_KEY" \
+  --value "your-key" --type SecureString --region $AWS_REGION
 
-# Example: if Zoro needs a database URL
-aws ssm put-parameter \
-  --name "/strawhats/zoro/DATABASE_URL" \
-  --value "postgres://user:pass@host:5432/db" \
-  --type SecureString \
-  --region $AWS_REGION
+aws ssm put-parameter --name "/strawhats/sanji/GEMINI_MODEL" \
+  --value "gemini-2.5-flash" --type SecureString --region $AWS_REGION
 
-# Add one command per secret in your .env file
+aws ssm put-parameter --name "/strawhats/sanji/GROQ_API_KEY" \
+  --value "your-key" --type SecureString --region $AWS_REGION
+
+aws ssm put-parameter --name "/strawhats/sanji/GROQ_MODEL" \
+  --value "llama-3.3-70b-versatile" --type SecureString --region $AWS_REGION
+
+aws ssm put-parameter --name "/strawhats/sanji/OCR_API_KEY" \
+  --value "your-key" --type SecureString --region $AWS_REGION
+
+aws ssm put-parameter --name "/strawhats/sanji/OCR_MODEL_ID" \
+  --value "your-model-id" --type SecureString --region $AWS_REGION
 ```
 
-> 💡 **Naming convention:** `/strawhats/sanji/KEY_NAME` keeps things organized.
-> You'll need the full parameter ARN in Step 7. The ARN format is:
-> `arn:aws:ssm:ap-south-1:<YOUR_ACCOUNT_ID>:parameter/strawhats/sanji/OPENAI_API_KEY`
+### Verify they exist:
+```bash
+aws ssm get-parameters \
+  --names "/strawhats/zoro/DATABASE_CONNECTION_STRING" "/strawhats/zoro/ENCRYPTION_SECRET_KEY" "/strawhats/zoro/BUCKET_ENDPOINT_STRING" \
+  --region $AWS_REGION --query '{found:Parameters[*].Name,invalid:InvalidParameters}'
 
-✅ Each command should return `"Version": 1`.
+aws ssm get-parameters \
+  --names "/strawhats/sanji/GEMINI_API_KEY" "/strawhats/sanji/GEMINI_MODEL" "/strawhats/sanji/GROQ_API_KEY" "/strawhats/sanji/GROQ_MODEL" "/strawhats/sanji/OCR_API_KEY" "/strawhats/sanji/OCR_MODEL_ID" \
+  --region $AWS_REGION --query '{found:Parameters[*].Name,invalid:InvalidParameters}'
+```
 
 ---
 
 ## Step 7 — Create Task Definitions
 
-A task definition tells ECS what container to run, how much CPU/RAM to give it, what ports to open, and where to get secrets.
+> ⚠️ **Critical:** All ARNs (ECR image, SSM parameters, CloudWatch region) must use the SAME region as your ECS cluster. This was the #1 cause of deployment failures.
 
-> ⚠️ **Note on `SANJI_URL` in Zoro's task definition:** Zoro needs to know Sanji's address. Since Sanji has no public IP, Zoro will use Sanji's **private IP**. You'll get that IP in Step 10 and update Zoro's service then. For now, leave `SANJI_URL` as a placeholder — it'll be filled in after Sanji is running.
+### 7a. `task-def-zoro.json`
 
-### 7a. Create `task-def-zoro.json`
+Zoro's task includes a `cloudflared` sidecar container for the Cloudflare Tunnel. This gives HTTPS access without an ALB.
 
-Create this file in your monorepo root. Replace `<YOUR_ACCOUNT_ID>` throughout.
+The Go backend reads `GENAI_HOST` and `GENAI_PORT` separately and builds the Sanji URL as:
+```go
+fmt.Sprintf("http://%s%s%s", cfg.GenAIHost, cfg.GenAIPort, cfg.GenAIUploadEndpoint)
+```
+
+So we pass them as separate env vars, NOT a single URL.
 
 ```json
 {
   "family": "zoro-backend",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "256",
-  "memory": "512",
+  "cpu": "512",
+  "memory": "1024",
   "executionRoleArn": "arn:aws:iam::<YOUR_ACCOUNT_ID>:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
       "name": "zoro-backend",
-      "image": "<YOUR_ACCOUNT_ID>.dkr.ecr.ap-south-1.amazonaws.com/zoro-backend:latest",
+      "image": "<YOUR_ACCOUNT_ID>.dkr.ecr.<YOUR_REGION>.amazonaws.com/zoro-backend:latest",
       "portMappings": [
         { "containerPort": 3000, "protocol": "tcp" }
       ],
       "environment": [
-        { "name": "GO_ENV", "value": "production" },
-        { "name": "SANJI_URL", "value": "PLACEHOLDER" }
+        { "name": "ENV", "value": "production" },
+        { "name": "BACKEND_PORT", "value": ":3000" },
+        { "name": "BACKEND_HOST", "value": "zoro" },
+        { "name": "BACKEND_LOGIN_API", "value": "/auth/login" },
+        { "name": "BACKEND_SIGNUP_API", "value": "/auth/signup" },
+        { "name": "BACKEND_UPLOAD_API", "value": "/uploadreceipt" },
+        { "name": "BACKEND_MANUAL_EXPENSE_API", "value": "/manualexpense" },
+        { "name": "BACKEND_ANALYTICS_API", "value": "/useranalytics" },
+        { "name": "BACKEND_INSIGHTS_API", "value": "/userinsights" },
+        { "name": "BACKEND_DAYRECEIPTS_API", "value": "/todayreceipts" },
+        { "name": "GENAI_HOST", "value": "SANJI_PRIVATE_IP_PLACEHOLDER" },
+        { "name": "GENAI_PORT", "value": ":4000" },
+        { "name": "GENAI_UPLOAD_API", "value": "/uploadreceipt" },
+        { "name": "GENAI_GET_ANALYTICS_API", "value": "/getanalytics" },
+        { "name": "GENAI_GENERATE_SUMMARY_API", "value": "/generatesummary" }
       ],
       "secrets": [
         {
-          "name": "DATABASE_URL",
-          "valueFrom": "arn:aws:ssm:ap-south-1:<YOUR_ACCOUNT_ID>:parameter/strawhats/zoro/DATABASE_URL"
+          "name": "ENCRYPTION_SECRET_KEY",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/zoro/ENCRYPTION_SECRET_KEY"
+        },
+        {
+          "name": "DATABASE_CONNECTION_STRING",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/zoro/DATABASE_CONNECTION_STRING"
+        },
+        {
+          "name": "BUCKET_ENDPOINT_STRING",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/zoro/BUCKET_ENDPOINT_STRING"
         }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/zoro-backend",
-          "awslogs-region": "ap-south-1",
-          "awslogs-stream-prefix": "ecs"
+          "awslogs-region": "<YOUR_REGION>",
+          "awslogs-stream-prefix": "zoro"
+        }
+      }
+    },
+    {
+      "name": "cloudflared",
+      "image": "cloudflare/cloudflared:latest",
+      "command": ["tunnel", "--no-autoupdate", "run", "--token", "<YOUR_TUNNEL_TOKEN>"],
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/zoro-backend",
+          "awslogs-region": "<YOUR_REGION>",
+          "awslogs-stream-prefix": "cloudflared"
         }
       }
     }
@@ -217,11 +264,9 @@ Create this file in your monorepo root. Replace `<YOUR_ACCOUNT_ID>` throughout.
 }
 ```
 
-> Remove the `"secrets"` block if Zoro has no secrets. Add one entry per secret if it has more.
-> `SANJI_URL` will be something like `http://10.0.x.x:4000` — you'll update this in Step 10 after Sanji is up.
-> Make sure your Go code reads this as an environment variable (e.g. `os.Getenv("SANJI_URL")`).
+> CPU is 512 and memory is 1024 because Zoro runs two containers (backend + cloudflared).
 
-### 7b. Create `task-def-sanji.json`
+### 7b. `task-def-sanji.json`
 
 ```json
 {
@@ -234,24 +279,48 @@ Create this file in your monorepo root. Replace `<YOUR_ACCOUNT_ID>` throughout.
   "containerDefinitions": [
     {
       "name": "sanji-genai",
-      "image": "<YOUR_ACCOUNT_ID>.dkr.ecr.ap-south-1.amazonaws.com/sanji-genai:latest",
+      "image": "<YOUR_ACCOUNT_ID>.dkr.ecr.<YOUR_REGION>.amazonaws.com/sanji-genai:latest",
       "portMappings": [
         { "containerPort": 4000, "protocol": "tcp" }
       ],
       "environment": [
-        { "name": "ENVIRONMENT", "value": "production" }
+        { "name": "GENAI_HOST", "value": "0.0.0.0" },
+        { "name": "GENAI_PORT", "value": ":4000" },
+        { "name": "GENAI_UPLOAD_API", "value": "/uploadreceipt" },
+        { "name": "GENAI_GENERATE_SUMMARY_API", "value": "/generatesummary" },
+        { "name": "GENAI_GET_ANALYTICS_API", "value": "/getanalytics" }
       ],
       "secrets": [
         {
-          "name": "OPENAI_API_KEY",
-          "valueFrom": "arn:aws:ssm:ap-south-1:<YOUR_ACCOUNT_ID>:parameter/strawhats/sanji/OPENAI_API_KEY"
+          "name": "GEMINI_API_KEY",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/sanji/GEMINI_API_KEY"
+        },
+        {
+          "name": "GEMINI_MODEL",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/sanji/GEMINI_MODEL"
+        },
+        {
+          "name": "GROQ_API_KEY",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/sanji/GROQ_API_KEY"
+        },
+        {
+          "name": "GROQ_MODEL",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/sanji/GROQ_MODEL"
+        },
+        {
+          "name": "OCR_API_KEY",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/sanji/OCR_API_KEY"
+        },
+        {
+          "name": "OCR_MODEL_ID",
+          "valueFrom": "arn:aws:ssm:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:parameter/strawhats/sanji/OCR_MODEL_ID"
         }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/sanji-genai",
-          "awslogs-region": "ap-south-1",
+          "awslogs-region": "<YOUR_REGION>",
           "awslogs-stream-prefix": "ecs"
         }
       }
@@ -260,244 +329,242 @@ Create this file in your monorepo root. Replace `<YOUR_ACCOUNT_ID>` throughout.
 }
 ```
 
-> ⚠️ Add one `secrets` entry per secret you stored in SSM in Step 6.
-
-### 7c. Auto-replace your account ID
+### 7c. Replace placeholders and register
 
 ```bash
-sed -i "s/<YOUR_ACCOUNT_ID>/$AWS_ACCOUNT_ID/g" task-def-zoro.json task-def-sanji.json
-```
+sed -i '' "s/<YOUR_ACCOUNT_ID>/$AWS_ACCOUNT_ID/g" task-def-zoro.json task-def-sanji.json
+sed -i '' "s/<YOUR_REGION>/$AWS_REGION/g" task-def-zoro.json task-def-sanji.json
 
-### 7d. Register the task definitions
-
-```bash
 aws ecs register-task-definition --cli-input-json file://task-def-zoro.json --region $AWS_REGION
 aws ecs register-task-definition --cli-input-json file://task-def-sanji.json --region $AWS_REGION
 ```
 
-✅ You should see a large JSON response with `"taskDefinitionArn"` in it for each.
+> On macOS, `sed -i ''` is required (empty string after `-i`). On Linux, use `sed -i` without the `''`.
 
 ---
 
 ## Step 8 — Networking Setup
 
-This creates **two separate security groups** — one for each service — to enforce that Sanji is only reachable by Zoro, not the open internet.
+Two security groups — Zoro is public-facing, Sanji is internal only.
 
 ```bash
-# Get your default VPC ID
 export VPC_ID=$(aws ec2 describe-vpcs \
   --filters Name=isDefault,Values=true \
-  --query 'Vpcs[0].VpcId' --output text)
+  --query 'Vpcs[0].VpcId' --output text --region $AWS_REGION)
 
-# Get subnet IDs in that VPC
 export SUBNETS=$(aws ec2 describe-subnets \
   --filters Name=defaultForAz,Values=true \
-  --query 'Subnets[*].SubnetId' --output text | tr '\t' ',')
+  --query 'Subnets[*].SubnetId' --output text --region $AWS_REGION | tr '\t' ',')
 
-# --- Zoro's security group (public-facing) ---
-export ZORO_SG_ID=$(aws ec2 create-security-group \
+# Zoro SG — public on port 3000
+export ZORO_SG=$(aws ec2 create-security-group \
   --group-name zoro-sg \
-  --description "Zoro ECS service — public on port 3000" \
+  --description "Zoro — public port 3000" \
   --vpc-id $VPC_ID \
-  --query 'GroupId' --output text)
+  --query 'GroupId' --output text --region $AWS_REGION)
 
-# Allow Nami (and anyone) to call Zoro on port 3000
 aws ec2 authorize-security-group-ingress \
-  --group-id $ZORO_SG_ID --protocol tcp --port 3000 --cidr 0.0.0.0/0
+  --group-id $ZORO_SG --protocol tcp --port 3000 --cidr 0.0.0.0/0 --region $AWS_REGION
 
-# --- Sanji's security group (internal only) ---
-export SANJI_SG_ID=$(aws ec2 create-security-group \
+# Sanji SG — only Zoro can reach port 4000
+export SANJI_SG=$(aws ec2 create-security-group \
   --group-name sanji-sg \
-  --description "Sanji ECS service — only reachable by Zoro" \
+  --description "Sanji — only reachable by Zoro" \
   --vpc-id $VPC_ID \
-  --query 'GroupId' --output text)
+  --query 'GroupId' --output text --region $AWS_REGION)
 
-# Allow ONLY Zoro's security group to reach Sanji on port 4000
 aws ec2 authorize-security-group-ingress \
-  --group-id $SANJI_SG_ID \
-  --protocol tcp \
-  --port 4000 \
-  --source-group $ZORO_SG_ID
+  --group-id $SANJI_SG --protocol tcp --port 4000 \
+  --source-group $ZORO_SG --region $AWS_REGION
 
-# Print for verification
-echo "VPC: $VPC_ID"
-echo "Subnets: $SUBNETS"
-echo "Zoro SG: $ZORO_SG_ID"
-echo "Sanji SG: $SANJI_SG_ID"
+echo "Zoro SG: $ZORO_SG"
+echo "Sanji SG: $SANJI_SG"
 ```
-
-✅ Note down both Security Group IDs — you'll need them in Step 9.
 
 ---
 
-## Step 9 — Create ECS Services
+## Step 9 — Identify the Working Subnet
 
-Zoro gets a public IP (so Nami can reach it). Sanji gets **no public IP** — it lives on the private network and is only reachable from within the VPC by Zoro.
+> ⚠️ **Subnet connectivity issue:** Not all default subnets may have proper internet access. Some subnets can fail to reach ECR or SSM, causing `ResourceInitializationError`. To avoid this, identify a subnet that works and pin both services to it.
 
 ```bash
-# Sanji — deploy first so we can get its private IP for Zoro
+# Pick the first subnet and test with Sanji first
+export WORKING_SUBNET=$(echo $SUBNETS | cut -d',' -f1)
+echo "Testing subnet: $WORKING_SUBNET"
+```
+
+If a service fails with connectivity errors, try the next subnet in the list. Once you find one that works, use it for both services.
+
+---
+
+## Step 10 — Create ECS Services
+
+Deploy Sanji first (so we can get its private IP for Zoro).
+
+```bash
+# Sanji — no public IP, internal only, pinned to working subnet
 aws ecs create-service \
   --cluster strawhats \
   --service-name sanji-genai \
   --task-definition sanji-genai \
   --desired-count 1 \
   --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SANJI_SG_ID],assignPublicIp=DISABLED}" \
-  --region $AWS_REGION
-
-# Zoro — public IP enabled so Nami can reach it
-aws ecs create-service \
-  --cluster strawhats \
-  --service-name zoro-backend \
-  --task-definition zoro-backend \
-  --desired-count 1 \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$ZORO_SG_ID],assignPublicIp=ENABLED}" \
+  --network-configuration "awsvpcConfiguration={subnets=[$WORKING_SUBNET],securityGroups=[$SANJI_SG],assignPublicIp=ENABLED}" \
   --region $AWS_REGION
 ```
 
-Now wait about 60–90 seconds for tasks to start. Then check:
+> `assignPublicIp=ENABLED` is needed even for Sanji so it can reach ECR and SSM. The security group ensures only Zoro can reach port 4000.
 
+Wait ~90 seconds, then verify Sanji is running:
 ```bash
-aws ecs list-tasks --cluster strawhats --region $AWS_REGION
-```
-
-✅ You should see two task ARNs listed.
-
----
-
-## Step 10 — Get IPs, Wire Zoro → Sanji, Run Health Checks
-
-### Get Sanji's private IP
-
-```bash
-SANJI_TASK=$(aws ecs list-tasks --cluster strawhats --service-name sanji-genai \
+export SANJI_TASK=$(aws ecs list-tasks --cluster strawhats --service-name sanji-genai \
   --region $AWS_REGION --query 'taskArns[0]' --output text)
+aws ecs describe-tasks --cluster strawhats --tasks $SANJI_TASK \
+  --region $AWS_REGION --query 'tasks[0].{status:lastStatus,reason:stoppedReason}'
+```
 
+Get Sanji's private IP:
+```bash
 SANJI_ENI=$(aws ecs describe-tasks --cluster strawhats --tasks $SANJI_TASK \
   --region $AWS_REGION \
   --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
   --output text)
 
 SANJI_PRIVATE_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $SANJI_ENI \
-  --query 'NetworkInterfaces[0].PrivateIpAddress' --output text)
+  --query 'NetworkInterfaces[0].PrivateIpAddress' --output text --region $AWS_REGION)
 
 echo "Sanji private IP: $SANJI_PRIVATE_IP"
 ```
 
-### Update Zoro's task definition with Sanji's private IP
-
-Now register a new revision of Zoro's task definition with the real `SANJI_URL`:
-
+Now update `GENAI_HOST` in `task-def-zoro.json` with Sanji's private IP:
 ```bash
-# Replace the PLACEHOLDER with Sanji's actual private IP
-sed -i "s|PLACEHOLDER|http://$SANJI_PRIVATE_IP:4000|g" task-def-zoro.json
-
-# Register the updated task definition
+sed -i '' "s/SANJI_PRIVATE_IP_PLACEHOLDER/$SANJI_PRIVATE_IP/g" task-def-zoro.json
 aws ecs register-task-definition --cli-input-json file://task-def-zoro.json --region $AWS_REGION
+```
 
-# Force Zoro to redeploy with the new task definition
-aws ecs update-service \
+Deploy Zoro:
+```bash
+aws ecs create-service \
   --cluster strawhats \
-  --service zoro-backend \
+  --service-name zoro-backend \
   --task-definition zoro-backend \
-  --force-new-deployment \
+  --desired-count 1 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[$WORKING_SUBNET],securityGroups=[$ZORO_SG],assignPublicIp=ENABLED}" \
   --region $AWS_REGION
 ```
 
-Wait ~60 seconds for Zoro to restart with the new config.
-
-### Get Zoro's public IP
-
+Verify both are running:
 ```bash
-ZORO_TASK=$(aws ecs list-tasks --cluster strawhats --service-name zoro-backend \
+export ZORO_TASK=$(aws ecs list-tasks --cluster strawhats --service-name zoro-backend \
   --region $AWS_REGION --query 'taskArns[0]' --output text)
-
-ZORO_ENI=$(aws ecs describe-tasks --cluster strawhats --tasks $ZORO_TASK \
-  --region $AWS_REGION \
-  --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
-  --output text)
-
-ZORO_PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $ZORO_ENI \
-  --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
-
-echo "Zoro public IP: $ZORO_PUBLIC_IP"
+aws ecs describe-tasks --cluster strawhats --tasks $SANJI_TASK $ZORO_TASK \
+  --region $AWS_REGION --query 'tasks[*].{service:containers[0].name,status:lastStatus,reason:stoppedReason}'
 ```
 
-### Health checks
-
+Health check Zoro:
 ```bash
-# Zoro should respond (public)
-curl http://$ZORO_PUBLIC_IP:3000/health
-
-# Sanji has no public IP — test it via Zoro's internal network only.
-# If Zoro exposes a proxy/debug route you can use that, otherwise check Sanji's logs:
-aws logs tail /ecs/sanji-genai --since 5m --region $AWS_REGION
+curl https://api.visora.me/health
 ```
-
-✅ Zoro's health check should respond. Sanji's logs should show it started successfully.
 
 ---
 
-## Step 11 — Add Zoro's URL to Vercel
+## Step 11 — Cloudflare Tunnel Setup (HTTPS without ALB)
 
-Only Zoro's URL goes to Vercel. Sanji is internal — Nami never talks to it directly.
+> An ALB costs ~$16-22/month. A Cloudflare Tunnel is free and provides HTTPS.
 
-In your Vercel project → Settings → Environment Variables, add:
+### 11a. Add domain to Cloudflare
+1. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → Add site → `visora.me` → Free plan
+2. Cloudflare gives you two nameservers
+3. Go to your domain registrar → replace nameservers with Cloudflare's
+4. Wait for Cloudflare to show domain as active
 
-```
-VITE_ZORO_URL=http://<ZORO_PUBLIC_IP>:3000
-```
+### 11b. Create the tunnel
+1. Cloudflare dashboard → Networking → Tunnels → Create Tunnel
+2. Name: `zoro-tunnel`
+3. Select Docker → copy the tunnel token
+4. Add the token to `task-def-zoro.json` in the `cloudflared` container's `command` array (see Step 7a)
 
-Then redeploy Nami on Vercel so it picks up the new variable.
+### 11c. Add public hostname route
+1. In the tunnel config → Add route → Published application
+2. Subdomain: `api`, Domain: `visora.me`
+3. Service URL: `http://localhost:3000`
+
+### 11d. DNS records in Cloudflare
+The tunnel auto-creates the `api` DNS record. For the frontend, add:
+- Type: `A`, Name: `@`, Value: `216.198.79.1`, Proxy: OFF
+- Type: `CNAME`, Name: `www`, Value: (get from Vercel domain settings), Proxy: OFF
+
+---
+
+## Step 12 — Deploy Nami on Vercel
+
+1. Go to [vercel.com/new](https://vercel.com/new) → import your GitHub repo
+2. Configure:
+   - Framework: Vite
+   - Root Directory: `frontend`
+   - Build Command: `npm run build`
+   - Output Directory: `dist`
+3. Environment variable:
+   - `VITE_API_BASE` = `https://api.visora.me`
+4. Deploy
+5. Add custom domain: Settings → Domains → add `visora.me`
 
 ---
 
 ## How to Redeploy After Code Changes
 
-Every time you push changes to Zoro or Sanji, run this:
-
 ```bash
-# Set variables again if in a new terminal session
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-export AWS_REGION=ap-south-1
+export AWS_REGION=eu-central-1
 export ECR_BASE=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
-# Re-authenticate Docker to ECR
 aws ecr get-login-password --region $AWS_REGION | \
   docker login --username AWS --password-stdin $ECR_BASE
 
-# For Sanji
-docker build -f Dockerfile-Sanji -t sanji-genai ./genAI
+# Sanji
+docker build --platform linux/amd64 -f Dockerfile-Sanji -t sanji-genai ./genAI
 docker tag sanji-genai:latest $ECR_BASE/sanji-genai:latest
 docker push $ECR_BASE/sanji-genai:latest
 aws ecs update-service --cluster strawhats --service sanji-genai \
   --force-new-deployment --region $AWS_REGION
 
-# For Zoro
-docker build -f Dockerfile-Zoro -t zoro-backend ./backend
+# Zoro
+docker build --platform linux/amd64 -f Dockerfile-Zoro -t zoro-backend ./backend
 docker tag zoro-backend:latest $ECR_BASE/zoro-backend:latest
 docker push $ECR_BASE/zoro-backend:latest
 aws ecs update-service --cluster strawhats --service zoro-backend \
   --force-new-deployment --region $AWS_REGION
 ```
 
-> ⚠️ **After every redeploy, private IPs change.** Re-run Step 10 to get Sanji's new private IP, update Zoro's task definition with it, and redeploy Zoro again. Also re-run to get Zoro's new public IP and update Vercel.
+> ⚠️ **After Sanji redeploys**, its private IP changes. Get the new IP (Step 10), update `GENAI_HOST` in `task-def-zoro.json`, re-register the task definition, and redeploy Zoro.
+> **Zoro's public IP also changes**, but since we use Cloudflare Tunnel, the `api.visora.me` URL stays the same — no Vercel update needed.
 
 ---
 
 ## Viewing Logs
 
 ```bash
-# Zoro logs (last 30 minutes)
 aws logs tail /ecs/zoro-backend --since 30m --region $AWS_REGION
-
-# Sanji logs
 aws logs tail /ecs/sanji-genai --since 30m --region $AWS_REGION
 
-# Follow logs in real time (like docker logs -f)
+# Real-time
 aws logs tail /ecs/zoro-backend --follow --region $AWS_REGION
 ```
+
+---
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `image Manifest does not contain descriptor matching platform 'linux/amd64'` | Built on Apple Silicon without `--platform` flag | Rebuild with `--platform linux/amd64` |
+| `invalid ssm parameters` | SSM parameters in wrong region or don't exist | Verify with `aws ssm get-parameters` in the correct region |
+| `unable to pull secrets from ssm: connection issue` | Task placed in subnet without internet access | Pin service to a working subnet |
+| `unable to pull secrets: kms decrypt` | Missing KMS decrypt permission on execution role | Add `kms:Decrypt` inline policy to `ecsTaskExecutionRole` |
+| `ResourceInitializationError: unable to pull registry auth` | Can't reach ECR — subnet/networking issue | Same as above — use a subnet with internet gateway route |
+| Mixed content errors in browser | Frontend (HTTPS) calling backend (HTTP) | Use Cloudflare Tunnel for HTTPS on backend |
+| `GENAI_HOST` and `GENAI_PORT` swapped | Copy-paste error in task definition | Double-check: HOST = IP address, PORT = `:4000` |
 
 ---
 
@@ -505,29 +572,31 @@ aws logs tail /ecs/zoro-backend --follow --region $AWS_REGION
 
 | Resource | Cost |
 |---|---|
-| Zoro — Fargate (256 CPU / 512MB, always on) | ~$3–4 |
-| Sanji — Fargate (256 CPU / 512MB, always on) | ~$3–4 |
+| Zoro — Fargate (512 CPU / 1024MB) | ~$6-8 |
+| Sanji — Fargate (256 CPU / 512MB) | ~$3-4 |
 | ECR storage | ~$0.10 |
 | CloudWatch Logs | ~$0.50 |
-| SSM Parameter Store | Free tier |
-| **Total** | **~$7–9/month** |
-
-Your $200 AWS credits will last **well over a year** at this rate.
+| SSM Parameter Store | Free |
+| Cloudflare Tunnel | Free |
+| Vercel (Hobby) | Free |
+| Domain (visora.me) | ~$9/year |
+| **Total** | **~$10-13/month** |
 
 ---
 
-## Quick Reference — Step Order
+## Quick Reference
 
 | # | Step | One-time? |
 |---|------|-----------|
-| 1 | Create ECR repositories | ✅ One-time |
-| 2 | Build & push images | 🔁 Every deploy |
-| 3 | Create IAM role | ✅ One-time |
-| 4 | Create ECS cluster | ✅ One-time |
-| 5 | Create CloudWatch log groups | ✅ One-time |
-| 6 | Store secrets in SSM | ✅ One-time (update if secrets change) |
-| 7 | Create task definitions | ✅ One-time (update if config changes) |
-| 8 | Networking / security groups | ✅ One-time |
-| 9 | Create ECS services | ✅ One-time |
-| 10 | Get IPs, wire Zoro → Sanji, health check | 🔁 Every deploy |
-| 11 | Update Vercel env var (Zoro URL only) | 🔁 Every deploy |
+| 1 | Create ECR repos | ✅ |
+| 2 | Build & push images (`--platform linux/amd64`) | 🔁 Every deploy |
+| 3 | Create IAM role + KMS decrypt policy | ✅ |
+| 4 | Create ECS cluster | ✅ |
+| 5 | Create CloudWatch log groups | ✅ |
+| 6 | Store secrets in SSM (same region!) | ✅ |
+| 7 | Create task definitions | ✅ (update if config changes) |
+| 8 | Create security groups | ✅ |
+| 9 | Identify working subnet | ✅ |
+| 10 | Deploy services, wire Zoro → Sanji | 🔁 (IP changes on redeploy) |
+| 11 | Cloudflare Tunnel + DNS | ✅ |
+| 12 | Deploy Nami on Vercel | ✅ |
