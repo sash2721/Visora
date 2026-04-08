@@ -16,11 +16,11 @@ Visora is a full-stack expense tracker that uses OCR and LLMs to turn receipt ph
 
 The project is split into three independently running services:
 
-| Service | Stack | Purpose |
-|---------|-------|---------|
-| `backend/` | Go (Chi router), PostgreSQL | REST API, auth, data persistence, orchestration |
-| `frontend/` | React 19, TypeScript, Vite | SPA with receipt upload, manual entry, dashboard |
-| `genAI/` | Python, FastAPI | OCR (Mindee), LLM categorization & insights (Gemini / Groq) |
+| Service | Stack | Deployment | Purpose |
+|---------|-------|------------|---------|
+| `backend/` | Go (Chi router), PostgreSQL | ECS Fargate + Cloudflare Tunnel | REST API, auth, data persistence, orchestration |
+| `frontend/` | React 19, TypeScript, Vite | Vercel | SPA with receipt upload, manual entry, dashboard |
+| `genAI/` | Python, FastAPI | ECS Fargate (internal, Cloud Map) | OCR (Mindee), LLM categorization & insights (Gemini / Groq) |
 
 ---
 
@@ -29,6 +29,35 @@ The project is split into three independently running services:
 > A system diagram would be a great addition here for portfolio visibility — it shows the inter-service communication, external API integrations, and data flow at a glance.
 
 ![System Architecture](docs/HighLevelDesign.png)
+
+### Deployment Architecture
+
+```
+visora.me (Vercel)  ──HTTPS──►  api.visora.me (Cloudflare Tunnel)
+                                       │
+                                       ▼
+                              ┌─────────────────┐
+                              │  Zoro (ECS)      │
+                              │  Go Backend      │
+                              │  + cloudflared   │
+                              │  Port 3000       │
+                              └────────┬─────────┘
+                                       │ VPC internal
+                                       ▼
+                              ┌─────────────────┐
+                              │  Sanji (ECS)     │
+                              │  FastAPI GenAI   │
+                              │  Port 4000       │
+                              └─────────────────┘
+                              sanji-genai.strawhats.local
+                              (AWS Cloud Map)
+```
+
+- Frontend served globally via Vercel CDN at `visora.me`
+- Backend exposed via Cloudflare Tunnel at `api.visora.me` (free HTTPS, no ALB)
+- GenAI service is internal only — reachable by backend via Cloud Map service discovery
+- Secrets stored in AWS SSM Parameter Store (KMS encrypted)
+- Container logs streamed to CloudWatch
 
 ---
 
@@ -73,6 +102,18 @@ The project is split into three independently running services:
 **Database**
 - PostgreSQL with UUID primary keys
 - Tables: `users`, `categories`, `receipts`, `items`, `user_analytics`, `user_insights`, `admins`
+
+**Infrastructure & Deployment**
+- Docker (multi-stage builds, `linux/amd64` for Fargate)
+- AWS ECS Fargate (container orchestration)
+- AWS ECR (private container registry)
+- AWS SSM Parameter Store (secrets management with KMS encryption)
+- AWS Cloud Map (service discovery — `sanji-genai.strawhats.local`)
+- AWS CloudWatch (container logs)
+- Cloudflare Tunnel (free HTTPS for backend without ALB)
+- Cloudflare DNS (domain management)
+- Vercel (frontend hosting + custom domain)
+- Porkbun (domain registrar — `visora.me`)
 
 ---
 

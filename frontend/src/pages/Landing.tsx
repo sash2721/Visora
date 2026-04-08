@@ -327,12 +327,7 @@ export default function Landing() {
             <div className={styles.logoIcon}><Sparkles size={14} /></div>
             <span className={styles.logoText}>Visora</span>
           </div>
-          <p>
-            © Crafted with ❤️ by{' '}
-            <a href="https://www.linkedin.com/in/sakshi-paygude/" target="_blank" rel="noopener noreferrer" className={styles.footerLink}>Sakshi</a>
-            {' & '}
-            <a href="https://www.linkedin.com/in/sash2721/" target="_blank" rel="noopener noreferrer" className={styles.footerLink}>Sahil</a>
-          </p>
+          <p>© {new Date().getFullYear()} Visora. All rights reserved.</p>
         </div>
       </footer>
     </div>

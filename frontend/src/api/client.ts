@@ -15,9 +15,24 @@ async function request<T>(
     headers['Content-Type'] = 'application/json';
   }
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  } catch {
+    throw new Error('Unable to connect. Please check your internet and try again.');
+  }
+
+  if (!res.ok) {
+    // Don't expose internal error details to the user
+    const status = res.status;
+    if (status === 401) throw new Error('Session expired. Please log in again.');
+    if (status === 403) throw new Error('You don\'t have permission to do that.');
+    if (status === 404) throw new Error('The requested resource was not found.');
+    if (status >= 500) throw new Error('Service temporarily unavailable. Please try again later.');
+    throw new Error('Something went wrong. Please try again.');
+  }
+
   const data = await res.json();
-  if (!res.ok) throw new Error(data.message || 'Something went wrong');
   return data as T;
 }
 
